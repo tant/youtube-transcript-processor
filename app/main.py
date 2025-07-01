@@ -37,6 +37,8 @@ from .utils.transcript_helpers import (
     get_video_info,
     clean_transcript_text
 )
+from .db import Base, SessionLocal, init_db
+from sqlalchemy import Column, String, Text
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +55,28 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Update the Transcript table schema
+class Transcript(Base):
+    __tablename__ = "transcripts"
+    video_id = Column(String, primary_key=True, index=True)
+    raw_transcript = Column(Text, nullable=True)  # Store raw transcript
+    clean_transcript = Column(Text, nullable=True)  # Store cleaned transcript
+    video_info = Column(Text, nullable=True)
+
+@app.on_event("startup")
+def startup_event():
+    """Initialize the database and create tables on application startup if not already created."""
+    try:
+        from sqlalchemy.engine import reflection
+        inspector = reflection.Inspector.from_engine(SessionLocal().bind)
+        if "transcripts" not in inspector.get_table_names():
+            init_db()
+            logger.info("Database initialized and tables created successfully.")
+        else:
+            logger.info("Database tables already exist. Skipping initialization.")
+    except Exception as e:
+        logger.error(f"Error initializing database: {str(e)}")
+
 api_key = os.getenv('GEMINI_API_KEY')
 if not api_key:
     logger.error("GEMINI_API_KEY not found in environment variables")
@@ -60,12 +84,13 @@ else:
     configure_gemini(api_key)
 
 @app.get("/raw-transcript/{video_id}")
-async def get_raw_transcript(video_id: str):
+async def get_raw_transcript(video_id: str, cache: bool = True):
     """Get the raw transcript from a YouTube video.
     
     Args:
         video_id (str): The YouTube video ID
-        
+        cache (bool): Whether to save the result to the database (default: True)
+    
     Returns:
         dict: Contains video_id and transcript as a list of text segments
         
@@ -73,6 +98,17 @@ async def get_raw_transcript(video_id: str):
         404: When transcript is not found or video is unavailable
         500: For other errors
     """
+    db = SessionLocal()
+    existing_transcript = db.query(Transcript).filter(Transcript.video_id == video_id).first()
+    if existing_transcript and existing_transcript.raw_transcript:
+        return {
+            "video_id": video_id,
+            "video_info": existing_transcript.video_info,
+            "transcript": existing_transcript.raw_transcript  # Already stored as a string
+        }
+    elif existing_transcript and not existing_transcript.raw_transcript:
+        logger.info(f"Transcript found in DB but empty, fetching new transcript for video_id: {video_id}")
+
     try:
         # First try to get manual English transcript
         try:
@@ -104,28 +140,34 @@ async def get_raw_transcript(video_id: str):
         available = get_available_transcripts(video_id)
         video_info = get_video_info(video_id)
         
-        return {
+        # Convert list to string before saving to database
+        transcript_text_str = '\n'.join(transcript_text)
+        result = {
             "video_id": video_id,
             "video_info": video_info,
-            "transcript": transcript_text,
+            "transcript": transcript_text_str,  # Return as a single string
             "available_transcripts": available
         }
-    except NoTranscriptFound:
-        # If no transcript found, return list of available ones if any
-        available = get_available_transcripts(video_id)
-        if available:
-            raise HTTPException(
-                status_code=404, 
-                detail={
-                    "message": "No English transcript found",
-                    "available_transcripts": available
-                }
-            )
-        raise HTTPException(status_code=404, detail="No transcript found for this video")
-    except VideoUnavailable:
-        raise HTTPException(status_code=404, detail="Video is unavailable")
+
+        # Save to database only if cache is True
+        if cache:
+            if existing_transcript:
+                existing_transcript.raw_transcript = transcript_text_str
+                existing_transcript.video_info = str(video_info)
+            else:
+                new_transcript = Transcript(
+                    video_id=video_id,
+                    raw_transcript=transcript_text_str,
+                    video_info=str(video_info)
+                )
+                db.add(new_transcript)
+            db.commit()
+        return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching transcript: {str(e)}")
+        db.rollback()
+        raise e
+    finally:
+        db.close()
 
 @app.get("/to-url/{video_id}")
 async def get_full_url(video_id: str):
@@ -173,26 +215,13 @@ async def get_video_id(url: str):
     }
 
 @app.get("/clean-transcript/{video_id}")
-async def get_clean_transcript(video_id: str):
+async def get_clean_transcript(video_id: str, cache: bool = True):
     """Get a cleaned and AI-enhanced transcript from a YouTube video.
     
-    Processing steps:
-    1. Smart transcript selection:
-       - Tries manual English transcript first
-       - Falls back to auto-generated English
-       - Finally tries any available language
-    2. Cleaning:
-       - Removes sound descriptions ([Music], [Applause], etc.)
-       - Strips extra whitespace and newlines
-       - Validates text segments
-    3. AI enhancement with Gemini:
-       - Reconstructs text into proper paragraphs
-       - Maintains original language and formatting
-       - Generates concise English summary
-    
     Args:
-        video_id (str): The YouTube video ID to process
-        
+        video_id (str): The YouTube video ID
+        cache (bool): Whether to save the result to the database (default: True)
+    
     Returns:
         dict: A JSON response containing:
             video_id (str): The original video ID
@@ -206,24 +235,39 @@ async def get_clean_transcript(video_id: str):
         - Handles Unicode characters properly
         - Uses Gemini AI for text reconstruction and summarization
     """
-    try:
-        transcript_list, transcript_info = get_best_transcript(video_id)
-        
-        if not transcript_list:
-            raise HTTPException(status_code=404, detail="No transcript found")
-            
-        # Extract text from transcript using helper function
-        try:
+    db = SessionLocal()
+    existing_transcript = db.query(Transcript).filter(Transcript.video_id == video_id).first()
+
+    if existing_transcript:
+        if existing_transcript.clean_transcript:
+            return {
+                "video_id": video_id,
+                "video_info": existing_transcript.video_info,
+                "transcript": existing_transcript.clean_transcript
+            }
+        elif existing_transcript.raw_transcript:
+            # Use the existing raw_transcript to clean and process
+            transcript_text = existing_transcript.raw_transcript.split('\n')
+        else:
+            # Fetch new transcript if raw_transcript is not available
+            transcript_list, transcript_info = get_best_transcript(video_id)
+            if not transcript_list:
+                raise HTTPException(status_code=404, detail="No transcript found")
+
             transcript_text = extract_transcript_segments(transcript_list)
             if not isinstance(transcript_text, list) or not transcript_text:
                 raise ValueError("Transcript extraction resulted in invalid format or empty list")
-        except Exception as e:
-            logger.error("Error extracting transcript text: %s", str(e))
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to extract text from transcript: {str(e)}"
-            )
-                
+    else:
+        # Fetch new transcript if video_id does not exist in the database
+        transcript_list, transcript_info = get_best_transcript(video_id)
+        if not transcript_list:
+            raise HTTPException(status_code=404, detail="No transcript found")
+
+        transcript_text = extract_transcript_segments(transcript_list)
+        if not isinstance(transcript_text, list) or not transcript_text:
+            raise ValueError("Transcript extraction resulted in invalid format or empty list")
+
+    try:
         model = get_model()
         if not model:
             raise HTTPException(
@@ -233,36 +277,39 @@ async def get_clean_transcript(video_id: str):
 
         # Clean and reconstruct transcript
         cleaned_transcript = clean_transcript_text(transcript_text)
-        
+
         # Generate a short summary
         summary = generate_short_summary(cleaned_transcript)
 
         video_info = get_video_info(video_id)
 
-        return {
+        result = {
             "video_id": video_id,
             "video_info": video_info,
             "transcript": cleaned_transcript,
-            "segments_count": len(transcript_list),
-            "short_summary": summary,
-            "transcript_info": transcript_info
+            "segments_count": len(transcript_text),
+            "short_summary": summary
         }
-    except NoTranscriptFound:
-        available = get_available_transcripts(video_id)
-        if available:
-            raise HTTPException(
-                status_code=404, 
-                detail={
-                    "message": "No suitable transcript found for cleaning",
-                    "available_transcripts": available
-                }
-            )
-        raise HTTPException(status_code=404, detail="No transcript found for this video")
-    except VideoUnavailable:
-        raise HTTPException(status_code=404, detail="Video is unavailable")
+
+        # Save to database only if cache is True
+        if cache:
+            if existing_transcript:
+                existing_transcript.clean_transcript = cleaned_transcript
+                existing_transcript.video_info = str(video_info)
+            else:
+                new_transcript = Transcript(
+                    video_id=video_id,
+                    clean_transcript=cleaned_transcript,
+                    video_info=str(video_info)
+                )
+                db.add(new_transcript)
+            db.commit()
+        return result
     except Exception as e:
-        logger.error(f"An unexpected error occurred in get_clean_transcript: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+        db.rollback()
+        raise e
+    finally:
+        db.close()
 
 @app.get("/available-transcripts/{video_id}")
 async def check_available_transcripts(video_id: str):
