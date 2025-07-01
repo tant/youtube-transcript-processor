@@ -1,325 +1,181 @@
-# YouTube Transcript Extractor API
+# YouTube Content Extractor
 
-A FastAPI-based REST API that extracts and processes transcripts from YouTube videos, featuring AI-powered text cleanup, formatting and summarization using Google's Gemini model.
+A FastAPI service that extracts and processes YouTube video transcripts with smart transcript selection and AI-powered formatting.
 
 ## Features
 
-- Extract raw transcripts from YouTube videos
-- Clean and format transcripts using Google's Gemini AI
-- Generate concise 100-word summaries of content
-- Remove sound descriptions ([Music], [Applause], etc.)
-- Convert between video IDs and URLs
-- Stream processing steps in real-time (SSE)
-- FastAPI-powered REST API with automatic OpenAPI documentation
-- Comprehensive error handling
-- Markdown-formatted output
+- Smart transcript selection with priority:
+  1. Manual transcripts in any language
+  2. Auto-generated transcripts as fallback
+  - Always preserves original language
+  - English summaries for all languages
+- Get raw YouTube transcripts with language info
+- Clean and format transcripts:
+  - Removes sound descriptions ([Music], [Applause], etc.)
+  - Joins transcript pieces into coherent paragraphs 
+  - Returns formatted Markdown
+  - Preserves Unicode characters (supports all languages)
+- Real-time streaming processing with SSE:
+  1. Raw transcript (immediate)
+  2. Cleaned transcript (no sound effects)
+  3. Formatted text (AI-reconstructed)
+  4. Short summary
+- Convert between video ID and URL formats
+- List all available transcripts with full language info
+- AI-powered features (requires Gemini API key):
+  - Reconstruct transcript into proper paragraphs
+  - Generate 100-word English summary
+  - Handles multilingual content
 
-## Prerequisites
-
-- Python 3.8 or higher
-- pip (Python package installer)
-
-## Installation
-
-1. Clone the repository:
-```bash
-git clone <your-repo-url>
-cd yt-content-extractor
-```
-
-2. Create a virtual environment:
-```bash
-python -m venv .venv
-```
-
-3. Activate the virtual environment:
-
-On Linux/macOS:
-```bash
-source .venv/bin/activate
-```
-
-On Windows:
-```bash
-.venv\Scripts\activate
-```
-
-4. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-5. Set up environment variables:
-```bash
-cp .env.sample .env
-```
-Edit the `.env` file with your preferred configuration.
-
-## Environment Variables
-
-The following environment variables can be configured in your `.env` file:
-
-- `PORT`: Server port (default: 8000)
-- `HOST`: Server host (default: 0.0.0.0)
-- `ENVIRONMENT`: Application environment (development/production/testing)
-- `RATE_LIMIT_PER_MINUTE`: API rate limit per minute
-- `CACHE_ENABLED`: Enable/disable caching
-- `CACHE_TTL`: Cache time-to-live in seconds
-- `ALLOWED_ORIGINS`: Comma-separated list of allowed CORS origins
-- `API_KEY`: API key for authentication (if enabled)
-- `GEMINI_API_KEY`: Your Google Gemini API key for AI features
-- `DATABASE_URL`: Database connection string (if needed)
-
-### Getting a Gemini API Key
-
-To use AI features powered by Google's Gemini model:
-
-1. Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
-2. Create or sign in to your Google account
-3. Click "Create API Key"
-4. Copy the generated API key
-5. Add it to your `.env` file:
-   ```bash
-   GEMINI_API_KEY=your_api_key_here
-   ```
-
-Note: Keep your API key secure and never commit it to version control.
-
-## Running the Application
-
-1. Start the FastAPI server:
-```bash
-uvicorn app.main:app --reload
-```
-
-The API will be available at `http://localhost:8000`
-
-## API Documentation
-
-Once the server is running, you can access the interactive API documentation at:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-
-## API Endpoints
+## API Endpoints 
 
 ### GET /raw-transcript/{video_id}
-Get the raw transcript segments from a YouTube video.
+Get the raw transcript for a YouTube video. Will attempt to find the best available transcript using smart selection.
 
-**Parameters:**
-- `video_id`: YouTube video ID (string, required)
-
-**Response:**
+Response:
 ```json
 {
-    "video_id": "string",
-    "transcript": ["string"]
-}
-```
-
-### GET /clean-transcript/{video_id}
-Get a cleaned and formatted transcript with AI-powered processing:
-- Removes sound descriptions
-- Reconstructs text into proper paragraphs
-- Formats as Markdown
-- Includes a 100-word summary of the content
-
-**Parameters:**
-- `video_id`: YouTube video ID (string, required)
-
-**Response:**
-```json
-{
-    "video_id": "string",
-    "transcript": "string (Markdown formatted)",
-    "segments_count": number
-}
-```
-
-### GET /clean-transcript-stream/{video_id}
-Stream the transcript processing steps in real-time using Server-Sent Events (SSE):
-1. Raw transcript segments
-2. Cleaned transcript (sound descriptions removed)
-3. Reconstructed and formatted text
-4. Final version with 100-word summary
-
-**Parameters:**
-- `video_id`: YouTube video ID (string, required)
-
-**Response:**
-For the streaming endpoint, you'll receive a series of SSE events with status updates:
-```json
-{"status": "raw", "transcript": [...]}
-{"status": "cleaned", "transcript": [...]}
-{"status": "complete", "transcript": "..."}
-{"status": "summary", "transcript": "...", "short_summary": "..."}
-```
-
-### GET /to-url/{video_id}
-Convert a YouTube video ID to its full URL.
-
-**Parameters:**
-- `video_id`: YouTube video ID (string, required)
-
-**Response:**
-```json
-{
-    "video_id": "string",
-    "url": "string"
-}
-```
-
-### GET /to-id
-Extract video ID from a YouTube URL.
-
-**Parameters:**
-- `url`: YouTube URL (string, query parameter, required)
-
-**Response:**
-```json
-{
-    "video_id": "string",
-    "url": "string"
-}
-```
-
-## Error Handling
-
-The API handles various error cases:
-
-- 404: Transcript not found or video unavailable
-- 400: Invalid video ID or URL format
-- 500: Gemini API errors or other internal errors
-
-Each error response includes a descriptive message:
-
-```json
-{
-    "detail": "Error message here"
-}
-```
-
-Extracts the transcript from a YouTube video.
-
-**Parameters:**
-- `video_id` (path parameter): The YouTube video ID (e.g., "dQw4w9WgXcQ" from "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-
-### GET /to-url/{video_id}
-
-Converts a YouTube video ID to its full URL.
-
-**Parameters:**
-- `video_id` (path parameter): The YouTube video ID
-
-**Response:**
-```json
-{
-    "video_id": "string",
-    "url": "string"
-}
-```
-
-### GET /to-id/
-
-Extracts the video ID from a YouTube URL.
-
-**Parameters:**
-- `url` (query parameter): The YouTube URL (supports various formats)
-
-**Response:**
-```json
-{
-    "video_id": "string",
-    "url": "string"
-}
-```
-
-Supported URL formats:
-- https://www.youtube.com/watch?v=VIDEO_ID
-- https://youtu.be/VIDEO_ID
-- https://www.youtube.com/embed/VIDEO_ID
-- Direct video ID
-
-**Response:**
-```json
-{
-    "video_id": "string",
-    "transcript": [
+    "video_id": "...",
+    "transcript": ["segment 1", "segment 2", ...],
+    "available_transcripts": [
         {
-            "text": "string",
-            "start": number,
-            "duration": number
+            "language": "English",
+            "language_code": "en",
+            "is_generated": false,
+            "is_translatable": true
         }
     ]
 }
 ```
 
-**Error Responses:**
-- 404: Video not found or no transcript available
-- 500: Server error
+### GET /clean-transcript/{video_id}
+Get a cleaned and formatted transcript with AI-generated summary. Supports any language while providing English summary.
 
-## Example Usage
-
-Using curl:
-```bash
-curl http://localhost:8000/transcript/dQw4w9WgXcQ
+Response:
+```json
+{
+    "video_id": "...",
+    "transcript": "Full formatted text in original language...",
+    "segments_count": 42,
+    "short_summary": "100-word English summary...",
+    "transcript_info": {
+        "language": "Vietnamese",
+        "language_code": "vi",
+        "type": "manual",
+        "is_generated": false
+    }
+}
 ```
 
-Using Python requests:
-```python
-import requests
+### GET /clean-transcript-stream/{video_id} 
+Stream the transcript processing steps via Server-Sent Events (SSE). Each step includes transcript info and preserves Unicode.
 
-video_id = "dQw4w9WgXcQ"
-response = requests.get(f"http://localhost:8000/transcript/{video_id}")
-transcript = response.json()
+Events:
+1. raw: Original transcript segments
+2. cleaned: Transcript with sound descriptions removed
+3. complete: AI-formatted text in paragraphs
+4. summary: Final text with 100-word summary
+
+Example event:
+```json
+{
+    "status": "complete",
+    "transcript": "Formatted text in paragraphs...",
+    "segments_count": 42,
+    "transcript_info": {
+        "language": "Japanese",
+        "language_code": "ja",
+        "type": "auto",
+        "is_generated": true
+    }
+}
 ```
 
-## Error Handling
+### GET /available-transcripts/{video_id}
+List all available transcripts for a video with detailed language information.
 
-The API handles several types of errors:
-- When no transcript is found for the video
-- When the video is unavailable
-- When the video ID is invalid
-- Other potential server errors
+Response:
+```json
+{
+    "video_id": "...",
+    "available_transcripts": [
+        {
+            "language": "English",
+            "language_code": "en",
+            "is_generated": false,
+            "is_translatable": true
+        },
+        {
+            "language": "Vietnamese",
+            "language_code": "vi", 
+            "is_generated": true,
+            "is_translatable": false
+        }
+    ]
+}
+```
 
-Each error returns an appropriate HTTP status code and a descriptive error message.
+### GET /to-url/{video_id}
+Convert a video ID to full YouTube URL.
 
-## License
+Response:
+```json
+{
+    "video_id": "dQw4w9WgXcQ",
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+}
+```
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+### GET /to-id/?url={youtube_url}
+Convert a YouTube URL to video ID.
 
-## Testing
+Response:
+```json
+{
+    "video_id": "dQw4w9WgXcQ",
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+}
+```
 
-The project uses pytest for testing. To run the tests:
+## Setup
 
-1. Install test dependencies:
+1. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Run the tests:
-```bash
-pytest
+2. Create .env file with Gemini API key:
+```
+GEMINI_API_KEY=your_key_here
 ```
 
-This will:
-- Run all tests in the `tests` directory
-- Show test coverage information
-- Display detailed test results
+3. Run the server:
+```bash 
+uvicorn app.main:app --reload
+```
 
-### Test Coverage
+## Language Support
 
-The tests cover:
-- Successful transcript retrieval
-- Handling of unavailable videos
-- Handling of videos without transcripts
-- Invalid video ID handling
-- API response format validation
+The service supports any language available in YouTube transcripts:
+- Can use manual or auto-generated transcripts
+- Preserves original language in transcript
+- Always generates summary in English
+- Full Unicode support for all languages
+- Smart transcript selection prioritizes:
+  1. Manual transcripts (any language)
+  2. Auto-generated transcripts as fallback
 
-## Contributing
+## Error Handling
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Write and test your changes
-4. Commit your changes (`git commit -m 'Add some amazing feature'`)
-5. Push to the branch (`git push origin feature/amazing-feature`)
-6. Open a Pull Request
+- 404: Video not found or no transcript available
+- 400: Invalid video ID or URL format
+- 500: Server error or Gemini API issues
+
+Detailed error responses include:
+- Error message
+- Available transcripts when relevant
+- Transcript language info when available
+
+## License
+
+MIT
