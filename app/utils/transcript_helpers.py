@@ -17,6 +17,7 @@ from youtube_transcript_api import (
     VideoUnavailable
 )
 import google.generativeai as genai
+import requests
 
 # Configure module logging
 logger = logging.getLogger(__name__)
@@ -37,13 +38,8 @@ def configure_gemini(api_key: str) -> Optional[Any]:
         global _model
         genai.configure(api_key=api_key)
         
-        # List available models
-        model_list = genai.list_models()
-        logger.info("Available Gemini Models: %s", 
-                   [model.name for model in model_list])
-        
         # Initialize the model
-        _model = genai.GenerativeModel('gemini-pro')
+        _model = genai.GenerativeModel('gemini-2.5-flash')
         logger.info("Successfully initialized Gemini model")
         return _model
     except Exception as e:
@@ -173,22 +169,9 @@ def get_best_transcript(video_id: str) -> Tuple[List, Dict]:
         available_transcripts = []
         first_transcript = None
         
-        logger.debug("Scanning available transcripts for video %s", video_id)
-        
-        # Get list of all transcripts 
         for transcript in transcript_list:
-            logger.debug("Found transcript: Language=%s (%s), Generated=%s, Translatable=%s",
-                       transcript.language,
-                       transcript.language_code,
-                       transcript.is_generated,
-                       transcript.is_translatable)
-            
-            # Store first transcript as fallback
             if first_transcript is None:
                 first_transcript = transcript
-                logger.debug("Stored first transcript as fallback: %s (%s)",
-                           transcript.language,
-                           transcript.language_code)
             
             if not transcript.is_generated:
                 # Found a manual transcript, try to use it
@@ -273,47 +256,43 @@ def get_best_transcript(video_id: str) -> Tuple[List, Dict]:
             detail=f"Error fetching transcript: {str(e)}"
         )
 
-def clean_transcript_text(transcript_text: List[str]) -> List[str]:
-    """Clean transcript text by removing sound descriptions and formatting.
-    
+def clean_transcript_text(transcript_text: list) -> str:
+    """Clean and reconstruct transcript text using Gemini AI.
+
     Args:
-        transcript_text (list): List of transcript segments
-        
+        transcript_text (list): A list of transcript text segments (strings).
+
     Returns:
-        list: Cleaned transcript segments
-        
-    Raises:
-        ValueError: If input is not a list or contains non-string elements
+        str: A single string with the cleaned and formatted transcript.
     """
-    # Type validation
-    if not isinstance(transcript_text, list):
-        raise ValueError(f"Expected list input, got {type(transcript_text)}")
-    
-    cleaned_text = []
-    sound_patterns = [r'\[Music\]', r'\[Applause\]', r'\[.*?\]']
-    
-    for text in transcript_text:
-        try:
-            # Convert to string if possible
-            text_str = str(text) if text is not None else ""
-            
-            # Remove sound descriptions
-            clean_text = text_str
-            for pattern in sound_patterns:
-                clean_text = re.sub(pattern, '', clean_text, flags=re.IGNORECASE)
-            
-            # Remove newlines and extra spaces
-            clean_text = clean_text.replace('\n', ' ').strip()
-            
-            # Add if not empty
-            if clean_text:
-                cleaned_text.append(clean_text)
-                
-        except Exception as e:
-            logger.warning("Failed to process transcript segment: %s", str(e))
-            continue
-            
-    return cleaned_text
+    # First, join all text segments into a single block
+    full_text = " ".join(transcript_text)
+
+    # Use Gemini to clean and reformat the text
+    model = get_model()
+    if not model:
+        raise ValueError("Gemini model not properly configured")
+
+    prompt = f"""Please clean and reformat the following transcript. The transcript is currently a single block of text with potential errors, missing punctuation, and no paragraph breaks. Your task is to:
+
+1.  **Correct grammar and spelling mistakes.**
+2.  **Add appropriate punctuation**, including commas, periods, and question marks.
+3.  **Structure the text into logical paragraphs.** Each paragraph should represent a coherent idea or a speaker's turn.
+4.  **Do not summarize or change the meaning.** Preserve the original language and content.
+5.  **Ensure the output is a single, clean block of text.**
+
+Here is the transcript:
+
+{full_text}
+"""
+
+    try:
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        logger.error(f"Failed to clean transcript with Gemini: {str(e)}")
+        # Fallback to simple join if AI fails
+        return full_text
 
 def extract_transcript_segments(transcript_data) -> List[str]:
     """Extract text from transcript data.
@@ -333,29 +312,18 @@ def extract_transcript_segments(transcript_data) -> List[str]:
     """
     logger.debug("Processing transcript data of type: %s", type(transcript_data))
     
-    # Handle FetchedTranscript object from youtube_transcript_api
     if str(type(transcript_data)) == "<class 'youtube_transcript_api._transcripts.FetchedTranscript'>":
-        logger.debug("Input is FetchedTranscript from youtube_transcript_api")
         try:
-            logger.debug("Available attributes: %s", dir(transcript_data))
-            
-            # Try to access the transcript segments directly
             segments = []
             
-            # Try to access raw property if available
             if hasattr(transcript_data, '_transcripts') and isinstance(transcript_data._transcripts, list):
-                logger.debug("Found _transcripts as list")
                 segments = transcript_data._transcripts
             elif hasattr(transcript_data, 'snippets'):
-                logger.debug("Found snippets attribute")
                 segments = transcript_data.snippets
             elif str(transcript_data).startswith('FetchedTranscript(snippets=['):
-                logger.debug("Parsing str representation")
-                # Parse the string representation which contains all segments
-                # Format is: FetchedTranscript(snippets=[FetchedTranscriptSnippet(text='...', start=X, duration=Y), ...])
                 str_repr = str(transcript_data)
                 segments_str = str_repr[str_repr.find('[') + 1:str_repr.rfind(']')]
-                # Split by ), but not if inside quotes
+                
                 parts = []
                 current = ""
                 in_quotes = False
@@ -370,10 +338,8 @@ def extract_transcript_segments(transcript_data) -> List[str]:
                 if current.strip():
                     parts.append(current)
                     
-                # Process each part to extract text
                 for part in parts:
                     if 'text=' in part:
-                        # Extract text between quotes after text=
                         text_start = part.find("text='") + 6
                         text_end = part.find("'", text_start)
                         text = part[text_start:text_end]
@@ -381,52 +347,37 @@ def extract_transcript_segments(transcript_data) -> List[str]:
                             segments.append({'text': text})
             
             if segments:
-                logger.debug("Found %d segments", len(segments))
                 transcript_data = segments
             else:
-                logger.warning("Could not extract segments, using empty list")
                 transcript_data = []
         except Exception as e:
             logger.error("Failed to extract from FetchedTranscript: %s", str(e))
-            logger.debug("Object details: %s", dir(transcript_data))
             raise ValueError(f"Failed to process FetchedTranscript: {str(e)}")
     
-    # Convert single dict/object to list
     if isinstance(transcript_data, dict) or hasattr(transcript_data, 'text'):
-        logger.debug("Converting single segment to list")
         transcript_data = [transcript_data]
     
-    # Ensure we have a list
     if not isinstance(transcript_data, list):
         logger.error("Expected list or FetchedTranscript, got %s", type(transcript_data))
         raise ValueError(f"Expected list or FetchedTranscript input, got {type(transcript_data)}")
     
     transcript_text = []
     try:
-        logger.debug("Processing %d segments", len(transcript_data))
         for segment in transcript_data:
             text = None
-            logger.debug("Processing segment of type: %s", type(segment))
-            logger.debug("Segment content: %s", segment)
             
-            # First try the object interface (FetchedTranscriptSnippet)
             if hasattr(segment, 'text'):
                 try:
                     text = getattr(segment, 'text')
-                    logger.debug("Extracted text using attribute: %s", text[:50])
                 except AttributeError as ae:
                     logger.warning("Failed to access text attribute: %s", str(ae))
-                    logger.debug("Available attributes: %s", dir(segment))
                     continue
             
-            # Try dict interface with fallbacks
             elif isinstance(segment, dict):
-                # Try common key variations
                 keys_to_try = ['text', 'content', 'transcript', 'value']
                 for key in keys_to_try:
                     text = segment.get(key)
                     if text is not None:
-                        logger.debug("Found text using key '%s': %s", key, text[:50])
                         break
                 if text is None:
                     logger.warning("Could not find text in dict with keys: %s", list(segment.keys()))
@@ -522,3 +473,34 @@ Text to reconstruct:
     except Exception as e:
         logger.error("Error formatting transcript: %s", str(e))
         return text  # Return original text as fallback
+
+def get_video_info(video_id: str) -> Dict:
+    """Get basic video information from YouTube using oEmbed API.
+    
+    Returns dict with title, author name, author URL, and thumbnail URL.
+    Returns empty values if video info cannot be retrieved."""
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        response = requests.get(oembed_url)
+        response.raise_for_status()
+        data = response.json()
+        return {
+            "title": data.get("title"),
+            "author_name": data.get("author_name"),
+            "author_url": data.get("author_url"),
+            "thumbnail_url": data.get("thumbnail_url")
+        }
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to fetch video info for {video_id}: {e}")
+        return {
+            "title": None,
+            "author": None,
+            "published_at": None
+        }
+    except Exception as e:
+        logger.error("Error getting video info: %s", str(e))
+        return {
+            "title": None,
+            "author": None,
+            "published_at": None
+        }
