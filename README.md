@@ -1,13 +1,15 @@
 # YouTube Transcript Extractor API
 
-A FastAPI-based REST API that extracts and processes transcripts from YouTube videos, featuring AI-powered text cleanup and formatting using Google's Gemini model.
+A FastAPI-based REST API that extracts and processes transcripts from YouTube videos, featuring AI-powered text cleanup, formatting and summarization using Google's Gemini model.
 
 ## Features
 
 - Extract raw transcripts from YouTube videos
 - Clean and format transcripts using Google's Gemini AI
+- Generate concise 100-word summaries of content
 - Remove sound descriptions ([Music], [Applause], etc.)
 - Convert between video IDs and URLs
+- Stream processing steps in real-time (SSE)
 - FastAPI-powered REST API with automatic OpenAPI documentation
 - Comprehensive error handling
 - Markdown-formatted output
@@ -115,7 +117,11 @@ Get the raw transcript segments from a YouTube video.
 ```
 
 ### GET /clean-transcript/{video_id}
-Get a cleaned and nicely formatted transcript using Gemini AI.
+Get a cleaned and formatted transcript with AI-powered processing:
+- Removes sound descriptions
+- Reconstructs text into proper paragraphs
+- Formats as Markdown
+- Includes a 100-word summary of the content
 
 **Parameters:**
 - `video_id`: YouTube video ID (string, required)
@@ -129,8 +135,27 @@ Get a cleaned and nicely formatted transcript using Gemini AI.
 }
 ```
 
+### GET /clean-transcript-stream/{video_id}
+Stream the transcript processing steps in real-time using Server-Sent Events (SSE):
+1. Raw transcript segments
+2. Cleaned transcript (sound descriptions removed)
+3. Reconstructed and formatted text
+4. Final version with 100-word summary
+
+**Parameters:**
+- `video_id`: YouTube video ID (string, required)
+
+**Response:**
+For the streaming endpoint, you'll receive a series of SSE events with status updates:
+```json
+{"status": "raw", "transcript": [...]}
+{"status": "cleaned", "transcript": [...]}
+{"status": "complete", "transcript": "..."}
+{"status": "summary", "transcript": "...", "short_summary": "..."}
+```
+
 ### GET /to-url/{video_id}
-Convert a video ID to full YouTube URL.
+Convert a YouTube video ID to its full URL.
 
 **Parameters:**
 - `video_id`: YouTube video ID (string, required)

@@ -62,6 +62,37 @@ def extract_video_id(url: str) -> str:
             return match.group(1)
     return None
 
+def generate_short_summary(text: str) -> str:
+    """Generate a short 100-word summary of the transcript using Gemini.
+    
+    Args:
+        text (str): The full transcript text to summarize
+        
+    Returns:
+        str: A 100-word summary of the content
+        
+    Raises:
+        ValueError: If Gemini model is not configured or generation fails
+    """
+    if not model:
+        raise ValueError("Gemini model not properly configured")
+        
+    prompt = """Create a clear and concise 100-word summary of this transcript. Focus on:
+- Main topics and key points
+- Important conclusions or insights
+- Keep it factual and objective
+- Exactly 100 words
+
+Text to summarize:
+{}""".format(text)
+
+    try:
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        raise ValueError(f"Failed to generate summary: {str(e)}")
+
+# Initialize FastAPI app
 @app.get("/raw-transcript/{video_id}")
 async def get_raw_transcript(video_id: str):
     """Get the raw transcript from a YouTube video.
@@ -144,7 +175,8 @@ async def get_clean_transcript(video_id: str):
     1. Fetches the raw transcript
     2. Removes sound descriptions ([Music], [Applause], etc.)
     3. Uses Gemini AI to reconstruct text into proper paragraphs
-    4. Returns formatted result in Markdown
+    4. Generates a 100-word summary
+    5. Returns formatted result in Markdown
     
     Args:
         video_id (str): The YouTube video ID
@@ -152,8 +184,9 @@ async def get_clean_transcript(video_id: str):
     Returns:
         dict: Contains:
             - video_id: The original video ID
-            - transcript: Cleaned and formatted text in Markdown
+            - transcript: Cleaned and formatted text in Markdown 
             - segments_count: Number of original transcript segments
+            - short_summary: A 100-word summary of the content
         
     Raises:
         404: When transcript is not found or video is unavailable
@@ -218,11 +251,15 @@ Output the reconstructed text in Markdown format with proper paragraph breaks.""
             total_input_length = sum(len(s) for s in transcript_text)
             if len(reconstructed_text) < total_input_length * 0.9:  # Allow for some punctuation/spacing optimization
                 raise ValueError("Generated transcript appears to be missing content")
+            
+            # Generate short summary
+            short_summary = generate_short_summary(reconstructed_text)
                 
             return {
                 "video_id": video_id,
                 "transcript": reconstructed_text,
-                "segments_count": len(transcript_text)  # Additional info for validation
+                "segments_count": len(transcript_text),  # Additional info for validation
+                "short_summary": short_summary
             }
         except Exception as e:
             raise HTTPException(
@@ -244,7 +281,8 @@ async def get_clean_transcript_stream(video_id: str):
     This endpoint streams the process in steps:
     1. Returns raw transcript immediately
     2. Updates with cleaned transcript (removed sound descriptions)
-    3. Finally returns the Gemini-processed formatted text
+    3. Sends the Gemini-processed formatted text
+    4. Finally returns a 100-word summary
     
     Args:
         video_id (str): The YouTube video ID
@@ -305,12 +343,16 @@ Output the reconstructed text in Markdown format with proper paragraph breaks.""
             response = model.generate_content(prompt)
             reconstructed_text = response.text.strip()
             
-            # Validate and send final result
+            # Validate 
             total_input_length = sum(len(s) for s in transcript_text)
             if len(reconstructed_text) < total_input_length * 0.9:
                 raise ValueError("Generated transcript appears to be missing content")
-                
+            
             yield f"data: {json.dumps({'status': 'complete', 'transcript': reconstructed_text, 'segments_count': len(transcript_text)})}\n\n"
+            
+            # Step 4: Generate and send summary
+            short_summary = generate_short_summary(reconstructed_text)
+            yield f"data: {json.dumps({'status': 'summary', 'transcript': reconstructed_text, 'segments_count': len(transcript_text), 'short_summary': short_summary})}\n\n"
             
         except Exception as e:
             yield f"data: {json.dumps({'status': 'error', 'detail': str(e)})}\n\n"
