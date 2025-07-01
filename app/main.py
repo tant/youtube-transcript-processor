@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 import os
 import re
 import json
+import logging
 from .utils.transcript_helpers import (
     configure_gemini,
     extract_video_id,
@@ -40,6 +41,14 @@ from .utils.transcript_helpers import (
     get_model
 )
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
 # Load and verify environment configuration
 load_dotenv()
 
@@ -50,20 +59,20 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Debug environment variables to verify configuration
-print("\nDEBUG: Environment variables loaded:")
-print(f"PORT: {os.getenv('PORT')}")
-print(f"HOST: {os.getenv('HOST')}")
-print(f"ENVIRONMENT: {os.getenv('ENVIRONMENT')}")
-print(f"GEMINI_API_KEY exists: {bool(os.getenv('GEMINI_API_KEY'))}")
-print(f"GEMINI_API_KEY length: {len(os.getenv('GEMINI_API_KEY') or '')}")
+# Verify environment configuration
+logger.info("Environment variables loaded:")
+logger.info("PORT: %s", os.getenv('PORT'))
+logger.info("HOST: %s", os.getenv('HOST'))
+logger.info("ENVIRONMENT: %s", os.getenv('ENVIRONMENT'))
+logger.debug("GEMINI_API_KEY exists: %s", bool(os.getenv('GEMINI_API_KEY')))
+logger.debug("GEMINI_API_KEY length: %s", len(os.getenv('GEMINI_API_KEY') or ''))
 
 # Configure Gemini AI with API key
 api_key = os.getenv('GEMINI_API_KEY')
 if not api_key:
-    print("\nERROR: GEMINI_API_KEY not found in environment variables")
+    logger.error("GEMINI_API_KEY not found in environment variables")
 else:
-    print(f"\nINFO: Configuring Gemini with API key of length {len(api_key)}")
+    logger.info("Configuring Gemini with API key of length %d", len(api_key))
     configure_gemini(api_key)
 
 # Initialize FastAPI app
@@ -103,7 +112,7 @@ async def get_raw_transcript(video_id: str):
             if not transcript_text:
                 raise HTTPException(status_code=404, detail="No valid text found in transcript")
         except Exception as e:
-            print(f"Error extracting transcript text: {str(e)}")
+            logger.error("Error extracting transcript text: %s", str(e))
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to process transcript: {str(e)}"
@@ -223,9 +232,9 @@ async def get_clean_transcript(video_id: str):
     """
     try:
         # Get best available transcript
-        print(f"\nGetting transcript for video {video_id}...")
+        logger.info("Getting transcript for video %s...", video_id)
         transcript_list, transcript_info = get_best_transcript(video_id)
-        print("Found transcript:", transcript_info)
+        logger.info("Found transcript: %s", transcript_info)
         
         if not transcript_list:
             raise HTTPException(status_code=404, detail="No transcript found")
@@ -239,18 +248,18 @@ async def get_clean_transcript(video_id: str):
             # Validate all segments are strings
             for segment in transcript_text:
                 if not isinstance(segment, str):
-                    print(f"WARNING: Non-string transcript text: {type(segment)}")
+                    logger.warning("Non-string transcript text: %s", type(segment))
                     transcript_text = [str(s) for s in transcript_text if s is not None]
                     break
                     
         except Exception as e:
-            print(f"Error extracting text from transcript: {str(e)}")
+            logger.error("Error extracting text from transcript: %s", str(e))
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to extract text from transcript: {str(e)}"
             )
                 
-        print(f"Extracted {len(transcript_text)} segments")
+        logger.info("Extracted %d segments", len(transcript_text))
         
         model = get_model()
         if not model:
@@ -271,7 +280,7 @@ async def get_clean_transcript(video_id: str):
         
         for text in transcript_text:
             if not isinstance(text, str):
-                print(f"WARNING: Non-string transcript text: {type(text)}")
+                logger.warning("Non-string transcript text: %s", type(text))
                 continue
                 
             # Remove sound descriptions
@@ -299,7 +308,7 @@ async def get_clean_transcript(video_id: str):
             # Generate short summary using Gemini
             short_summary = generate_short_summary(complete_text)
         except Exception as e:
-            print(f"Failed to generate summary: {str(e)}")
+            logger.warning("Failed to generate summary: %s", str(e))
             short_summary = None
 
         # Return response
@@ -316,7 +325,7 @@ async def get_clean_transcript(video_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error processing transcript: {str(e)}")
+        logger.error("Error processing transcript: %s", str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/clean-transcript-stream/{video_id}")
@@ -359,9 +368,9 @@ async def get_clean_transcript_stream(video_id: str):
     async def generate():
         try:
             # Step 1: Smart transcript selection and initial fetch
-            print(f"\nGetting transcript for video {video_id}...")
+            logger.info("Getting transcript for video %s...", video_id)
             transcript_list, transcript_info = get_best_transcript(video_id)
-            print("Found transcript:", transcript_info)
+            logger.info("Found transcript: %s", transcript_info)
             
             if not transcript_list:
                 yield f"data: {json.dumps({'status': 'error', 'detail': 'No transcript found'}, ensure_ascii=False)}\n\n"
@@ -374,7 +383,7 @@ async def get_clean_transcript_stream(video_id: str):
                 yield f"data: {json.dumps({'status': 'error', 'detail': e.detail}, ensure_ascii=False)}\n\n"
                 return
                     
-            print(f"Extracted {len(transcript_text)} segments")
+            logger.info("Extracted %d segments", len(transcript_text))
             
             # Stream Event 1: Raw transcript with language info
             yield f"data: {json.dumps({
@@ -433,7 +442,7 @@ async def get_clean_transcript_stream(video_id: str):
                     'transcript_info': transcript_info
                 }, ensure_ascii=False)}\n\n"
             except Exception as e:
-                print(f"Failed to generate summary: {str(e)}")
+                logger.warning("Failed to generate summary: %s", str(e))
                 # Still send final event but without summary
                 yield f"data: {json.dumps({
                     'status': 'summary',
@@ -446,7 +455,7 @@ async def get_clean_transcript_stream(video_id: str):
         except HTTPException as he:
             yield f"data: {json.dumps({'status': 'error', 'detail': he.detail}, ensure_ascii=False)}\n\n"
         except Exception as e:
-            print(f"Error processing transcript stream: {str(e)}")
+            logger.error("Error processing transcript stream: %s", str(e))
             yield f"data: {json.dumps({'status': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
     
     # Return SSE response with proper content type
